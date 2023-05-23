@@ -10,12 +10,12 @@ import numpy as np
 
 import optuna
 from optuna._transform import _SearchSpaceTransform
+from optuna.distributions import _is_distribution_log
 from optuna.distributions import BaseDistribution
 from optuna.distributions import CategoricalDistribution
 from optuna.distributions import FloatDistribution
 from optuna.distributions import IntDistribution
-from optuna.terminator import _distribution_is_log
-from optuna.terminator._search_space.intersection import IntersectionSearchSpace
+from optuna.search_space import intersection_search_space
 from optuna.trial._state import TrialState
 
 
@@ -89,7 +89,7 @@ class UnscaleLog(BasePreprocessing):
         value: Any, distribution: BaseDistribution
     ) -> Tuple[Any, BaseDistribution]:
         if isinstance(distribution, (IntDistribution, FloatDistribution)):
-            if _distribution_is_log(distribution):
+            if _is_distribution_log(distribution):
                 value = np.log(value)
                 low = np.log(distribution.low)
                 high = np.log(distribution.high)
@@ -207,7 +207,7 @@ class AddRandomInputs(BasePreprocessing):
         trials: List[optuna.trial.FrozenTrial],
         study_direction: Optional[optuna.study.StudyDirection],
     ) -> List[optuna.trial.FrozenTrial]:
-        search_space = IntersectionSearchSpace().calculate(trials)
+        search_space = intersection_search_space(trials, ordered_dict=True)
 
         additional_trials = []
         for _ in range(self._n_additional_trials):

@@ -27,6 +27,7 @@ from optuna import storages
 from optuna import trial as trial_module
 from optuna._convert_positional_args import convert_positional_args
 from optuna._deprecated import deprecated_func
+from optuna._experimental import experimental_func
 from optuna._imports import _LazyImport
 from optuna._typing import JSONSerializable
 from optuna.distributions import _convert_old_distribution_to_new_distribution
@@ -50,6 +51,7 @@ if TYPE_CHECKING:
 
 
 ObjectiveFuncType = Callable[[trial_module.Trial], Union[float, Sequence[float]]]
+_SYSTEM_ATTR_METRIC_NAMES = "study:metric_names"
 
 
 _logger = logging.get_logger(__name__)
@@ -436,7 +438,7 @@ class Study:
             show_progress_bar:
                 Flag to show progress bars or not. To disable progress bar, set this :obj:`False`.
                 Currently, progress bar is experimental feature and disabled
-                when ``n_trials`` is :obj:`None`, ``timeout`` not is :obj:`None`, and
+                when ``n_trials`` is :obj:`None`, ``timeout`` is not :obj:`None`, and
                 ``n_jobs`` :math:`\\ne 1`.
 
         Raises:
@@ -757,6 +759,11 @@ class Study:
         Note:
             If ``value`` is in ``attrs`` during multi-objective optimization, it is implicitly
             replaced with ``values``.
+
+        Note:
+            If :meth:`~optuna.study.Study.set_metric_names` is called, the ``value`` or ``values``
+            is implicitly replaced with the dictionary with the objective name as key and the
+            objective value as value.
         """
         return _dataframe._trials_dataframe(self, attrs, multi_index)
 
@@ -971,6 +978,51 @@ class Study:
         for trial in trials:
             self.add_trial(trial)
 
+    @experimental_func("3.2.0")
+    def set_metric_names(self, metric_names: List[str]) -> None:
+        """Set metric names.
+
+        This method names each dimension of the returned values of the objective function.
+        It is particularly useful in multi-objective optimization. The metric names are
+        mainly referenced by the visualization functions.
+
+        Example:
+
+            .. testcode::
+
+                import optuna
+                import pandas
+
+
+                def objective(trial):
+                    x = trial.suggest_float("x", 0, 10)
+                    return x**2, x + 1
+
+
+                study = optuna.create_study(directions=["minimize", "minimize"])
+                study.set_metric_names(["x**2", "x+1"])
+                study.optimize(objective, n_trials=3)
+
+                df = study.trials_dataframe(multi_index=True)
+                assert isinstance(df, pandas.DataFrame)
+                assert list(df.get("values").keys()) == ["x**2", "x+1"]
+
+        .. seealso::
+            The names set by this method are used in :meth:`~optuna.study.Study.trials_dataframe`
+            and :func:`~optuna.visualization.plot_pareto_front`.
+
+        Args:
+            metric_names: A list of metric names for the objective function.
+        """
+        if len(self.directions) != len(metric_names):
+            raise ValueError(
+                "The number of objectives must match thhe length of the metric names."
+            )
+
+        self._storage.set_study_system_attr(
+            self._study_id, _SYSTEM_ATTR_METRIC_NAMES, metric_names
+        )
+
     def _is_multi_objective(self) -> bool:
         """Return :obj:`True` if the study has multiple objectives.
 
@@ -1037,19 +1089,33 @@ class Study:
         if not _logger.isEnabledFor(logging.INFO):
             return
 
+        metric_names = self._storage.get_study_system_attrs(self._study_id).get(
+            _SYSTEM_ATTR_METRIC_NAMES
+        )
+
         if len(trial.values) > 1:
+            trial_values: Union[List[float], Dict[str, float]]
+            if metric_names is None:
+                trial_values = trial.values
+            else:
+                trial_values = {name: value for name, value in zip(metric_names, trial.values)}
             _logger.info(
                 "Trial {} finished with values: {} and parameters: {}. ".format(
-                    trial.number, trial.values, trial.params
+                    trial.number, trial_values, trial.params
                 )
             )
         elif len(trial.values) == 1:
             best_trial = self.best_trial
+            trial_value: Union[float, Dict[str, float]]
+            if metric_names is None:
+                trial_value = trial.values[0]
+            else:
+                trial_value = {metric_names[0]: trial.values[0]}
             _logger.info(
                 "Trial {} finished with value: {} and parameters: {}. "
                 "Best is trial {} with value: {}.".format(
                     trial.number,
-                    trial.values[0],
+                    trial_value,
                     trial.params,
                     best_trial.number,
                     best_trial.value,
@@ -1508,6 +1574,8 @@ def get_all_study_summaries(
     study_summaries = []
 
     for s in frozen_studies:
+        if isinstance(storage, _CachedStorage):
+            storage.read_trials_from_remote_storage(s._study_id)
         all_trials = storage.get_all_trials(s._study_id)
         completed_trials = [t for t in all_trials if t.state == TrialState.COMPLETE]
 
